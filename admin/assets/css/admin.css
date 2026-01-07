@@ -1,0 +1,218 @@
+/* Silent Trust Admin CSS */
+
+.st-dashboard {
+    padding: 20px 0;
+}
+
+#st-alerts .notice {
+    margin-bottom: 20px;
+}
+
+.st-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.st-card {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 20px;
+    text-align: center;
+}
+
+.st-card h3 {
+    margin: 0 0 10px;
+    font-size: 14px;
+    color: #646970;
+    font-weight: 500;
+}
+
+.st-card-value {
+    font-size: 32px;
+    font-weight: bold;
+    color: #1d2327;
+}
+
+.st-charts {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 20px;
+}
+
+.st-chart-container {
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 4px;
+    padding: 20px;
+    min-height: 400px;
+    position: relative;
+}
+
+.st-chart-container h3 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 16px;
+}
+
+.st-chart-container canvas {
+    max-height: 350px !important;
+    height: 350px !important;
+}
+
+.st-risk-badge {
+    display: inline-block;
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-weight: 600;
+    font-size: 13px;
+}
+
+.st-risk-low {
+    background: #d1e7dd;
+    color: #0f5132;
+}
+
+.st-risk-medium {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.st-risk-high {
+    background: #f8d7da;
+    color: #842029;
+}
+
+/* Modal */
+#st-explain-modal {
+    position: fixed;
+    z-index: 100000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0, 0, 0, 0.4);
+}
+
+.st-modal-content {
+    background-color: #fefefe;
+    margin: 5% auto;
+    padding: 30px;
+    border: 1px solid #888;
+    width: 80%;
+    max-width: 800px;
+    border-radius: 4px;
+}
+
+.st-modal-close {
+    color: #aaa;
+    float: right;
+    font-size: 28px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+.st-modal-close:hover {
+    color: #000;
+}
+
+.st-settings table {
+    margin-top: 20px;
+}
+
+.st-logs {
+    margin-top: 20px;
+}
+
+.st-logs table {
+    background: #fff;
+}
+
+/* Hover Tooltip for Submission Details */
+.st-submission-row {
+    position: relative;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.st-submission-row:hover {
+    background-color: #f0f6fc !important;
+}
+
+.st-tooltip {
+    position: fixed;
+    background: #fff;
+    border: 1px solid #c3c4c7;
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    padding: 16px;
+    min-width: 400px;
+    max-width: 500px;
+    z-index: 999999;
+    font-size: 12px;
+    line-height: 1.6;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+}
+
+.st-tooltip.show {
+    opacity: 1;
+}
+
+.st-tooltip h4 {
+    margin: 0 0 12px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e5e5e5;
+    font-size: 14px;
+    color: #1d2327;
+}
+
+.st-tooltip-section {
+    margin-bottom: 12px;
+}
+
+.st-tooltip-section:last-child {
+    margin-bottom: 0;
+}
+
+.st-tooltip-section strong {
+    display: block;
+    color: #646970;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+}
+
+.st-tooltip-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 4px 0;
+    border-bottom: 1px dotted #e5e5e5;
+}
+
+.st-tooltip-item:last-child {
+    border-bottom: none;
+}
+
+.st-tooltip-label {
+    color: #646970;
+    font-weight: 500;
+}
+
+.st-tooltip-value {
+    color: #1d2327;
+    font-weight: 400;
+    max-width: 60%;
+    text-align: right;
+    word-break: break-all;
+}
+
+.st-tooltip-value.empty {
+    color: #999;
+    font-style: italic;
+}
