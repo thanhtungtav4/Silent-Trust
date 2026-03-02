@@ -138,12 +138,12 @@ class Risk_Engine
         // This is a hard limit that applies to EVERYONE
         $daily_check = $this->db->check_daily_limit($device_cookie);
         if ($daily_check['exceeded']) {
-            error_log(sprintf(
-                '[Silent Trust] Daily limit exceeded - Device: %s, Count: %d, Limit: %d',
+            st_log(sprintf(
+                'Daily limit exceeded - Device: %s, Count: %d, Limit: %d',
                 substr($device_cookie, 0, 8),
                 $daily_check['count'],
                 $daily_check['limit']
-            ));
+            ), 'warn');
             return ['instant_allow' => false, 'instant_block' => true, 'reason' => 'daily_limit_exceeded'];
         }
 
@@ -215,12 +215,75 @@ class Risk_Engine
 
     /**
      * Check if stable traits match (UA family, platform, timezone, screen)
+     * Compares current payload against recent submissions with the same fingerprint.
      */
     private function check_stable_traits($payload)
     {
-        // This is simplified - in production, query DB for similar submissions
-        // and compare stable traits
-        return true; // Placeholder
+        if (empty($payload['fingerprint_hash'])) {
+            return true;
+        }
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'st_submissions';
+
+        // Get the most recent submission with this fingerprint
+        $previous = $wpdb->get_row($wpdb->prepare(
+            "SELECT user_agent, screen_resolution, fingerprint_data 
+             FROM {$table} 
+             WHERE fingerprint_hash = %s AND submitted_at > DATE_SUB(NOW(), INTERVAL 30 DAY)
+             ORDER BY submitted_at DESC LIMIT 1",
+            $payload['fingerprint_hash']
+        ));
+
+        if (!$previous) {
+            return true; // No history to compare against
+        }
+
+        $mismatches = 0;
+
+        // Compare timezone
+        if (!empty($payload['timezone']) && !empty($previous->fingerprint_data)) {
+            $prev_data = json_decode($previous->fingerprint_data, true);
+            if (!empty($prev_data['timezone']) && $prev_data['timezone'] !== $payload['timezone']) {
+                $mismatches++;
+            }
+        }
+
+        // Compare screen resolution
+        $current_screen = ($payload['screen_width'] ?? '') . 'x' . ($payload['screen_height'] ?? '');
+        if (!empty($previous->screen_resolution) && !empty($current_screen) && $current_screen !== 'x') {
+            if ($previous->screen_resolution !== $current_screen) {
+                $mismatches++;
+            }
+        }
+
+        // Compare user agent family (not exact, just browser family)
+        if (!empty($payload['user_agent']) && !empty($previous->user_agent)) {
+            $current_browser = $this->extract_browser_family($payload['user_agent']);
+            $prev_browser = $this->extract_browser_family($previous->user_agent);
+            if ($current_browser !== $prev_browser) {
+                $mismatches++;
+            }
+        }
+
+        // If 2+ traits changed, fingerprint is suspicious (likely spoofed)
+        return $mismatches < 2;
+    }
+
+    /**
+     * Extract browser family from user agent string
+     */
+    private function extract_browser_family($ua)
+    {
+        if (strpos($ua, 'Firefox') !== false)
+            return 'Firefox';
+        if (strpos($ua, 'Edg') !== false)
+            return 'Edge';
+        if (strpos($ua, 'Chrome') !== false)
+            return 'Chrome';
+        if (strpos($ua, 'Safari') !== false)
+            return 'Safari';
+        return 'Other';
     }
 
     /**

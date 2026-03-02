@@ -29,6 +29,9 @@ class Admin_AJAX
     public function get_dashboard_stats()
     {
         check_ajax_referer('st_admin_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized', 403);
+        }
 
         global $wpdb;
         $table = $wpdb->prefix . 'st_submissions';
@@ -63,6 +66,9 @@ class Admin_AJAX
     public function get_trend_data()
     {
         check_ajax_referer('st_admin_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized', 403);
+        }
 
         global $wpdb;
         $table = $wpdb->prefix . 'st_submissions';
@@ -88,6 +94,9 @@ class Admin_AJAX
     public function get_action_stats()
     {
         check_ajax_referer('st_admin_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized', 403);
+        }
 
         global $wpdb;
         $table = $wpdb->prefix . 'st_submissions';
@@ -108,6 +117,9 @@ class Admin_AJAX
     public function get_risk_distribution()
     {
         check_ajax_referer('st_admin_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized', 403);
+        }
 
         global $wpdb;
         $table = $wpdb->prefix . 'st_submissions';
@@ -131,6 +143,9 @@ class Admin_AJAX
     public function get_explainability()
     {
         check_ajax_referer('st_admin_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized', 403);
+        }
 
         $id = (int) $_POST['id'];
 

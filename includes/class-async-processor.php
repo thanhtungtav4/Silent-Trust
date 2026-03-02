@@ -103,7 +103,7 @@ class Async_Processor
         ]);
 
         if (!$inserted) {
-            error_log('[Silent Trust] Failed to queue analysis: ' . $wpdb->last_error);
+            st_log('Failed to queue analysis: ' . $wpdb->last_error, 'error');
             return false;
         }
 
@@ -168,7 +168,7 @@ class Async_Processor
             ], ['id' => $queue_id]);
 
         } catch (\Exception $e) {
-            error_log('[Silent Trust] Async analysis failed: ' . $e->getMessage());
+            st_log('Async analysis failed: ' . $e->getMessage(), 'error');
 
             $wpdb->update($table, [
                 'status' => 'failed',
@@ -198,12 +198,12 @@ class Async_Processor
         );
 
         // Log for admin review
-        error_log(sprintf(
-            '[Silent Trust] Retroactive spam penalty applied - Device: %s, IP: %s, Risk: %d',
+        st_log(sprintf(
+            'Retroactive spam penalty applied - Device: %s, IP: %s, Risk: %d',
             substr($queue_item['payload_hash'], 0, 8),
             $queue_item['ip_address'],
             $risk_result['score']
-        ));
+        ), 'warn');
     }
 
     /**
@@ -267,7 +267,7 @@ class Async_Processor
         ));
 
         if ($deleted) {
-            error_log("[Silent Trust] Cleaned up {$deleted} old queue items");
+            st_log("Cleaned up {$deleted} old queue items");
         }
     }
 

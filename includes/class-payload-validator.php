@@ -16,20 +16,12 @@ class Payload_Validator
 
     /**
      * Validate payload and detect obvious bots
+     * Note: Honeypot checks are handled by CF7_Integration, not here.
      */
     public function validate($payload, $ip_address)
     {
         $score = 0;
         $flags = [];
-
-        // Honeypot detection (CRITICAL - instant block)
-        $honeypot_result = $this->check_honeypot();
-        if ($honeypot_result > 0) {
-            return [
-                'score' => 100,
-                'flags' => ['honeypot_triggered']
-            ];
-        }
 
         // Missing or empty payload
         if (empty($payload) || !is_array($payload)) {
@@ -47,28 +39,32 @@ class Payload_Validator
             }
         }
 
-        // GeoIP consistency (soft signal)
-        if (isset($payload['timezone']) && !empty($ip_address)) {
-            $geoip = new GeoIP();
-            $location = $geoip->get_location($ip_address);
-
-            if ($location && isset($location['timezone'])) {
-                $reported_tz = $payload['timezone'];
-                $actual_tz = $location['timezone'];
-
-                if ($reported_tz !== $actual_tz) {
-                    $score += 10;
-                    $flags[] = 'timezone_mismatch';
-                }
-            }
+        // Format validation (canvas hash, screen dims, timezone offset)
+        $format_score = $this->validate_format($payload);
+        $score += $format_score;
+        if ($format_score > 0) {
+            $flags[] = 'invalid_format';
         }
 
-        // HTTP header analysis (User-Agent mismatch)
+        // GeoIP consistency (soft signal) — uses $this->geoip, no duplicate instance
+        $geo_score = $this->check_geo_consistency($payload, $ip_address);
+        $score += $geo_score;
+        if ($geo_score > 0) {
+            $flags[] = 'timezone_mismatch';
+        }
+
+        // HTTP header analysis
+        $http_score = $this->check_http_headers($payload);
+        $score += $http_score;
+        if ($http_score > 0) {
+            $flags[] = 'http_header_anomaly';
+        }
+
+        // User-Agent mismatch check
         if (isset($payload['user_agent']) && !empty($_SERVER['HTTP_USER_AGENT'])) {
             $reported_ua = $payload['user_agent'];
             $actual_ua = $_SERVER['HTTP_USER_AGENT'];
 
-            // Simple substring check (exact match too strict)
             if (strpos($actual_ua, $reported_ua) === false && strpos($reported_ua, $actual_ua) === false) {
                 $score += 20;
                 $flags[] = 'ua_mismatch';
@@ -79,32 +75,6 @@ class Payload_Validator
             'score' => $score,
             'flags' => $flags
         ];
-    }
-
-    /**
-     * Check honeypot fields (invisible to users, filled by bots)
-     */
-    private function check_honeypot()
-    {
-        $honeypot_fields = ['website_url', 'confirm_email', 'company_name'];
-
-        foreach ($honeypot_fields as $field) {
-            if (isset($_POST[$field]) && !empty($_POST[$field])) {
-                // Bot detected! Filled invisible field
-                $this->log_anomaly('honeypot_triggered', $field . ' filled: ' . $_POST[$field]);
-                return 100;
-            }
-        }
-
-        return 0;
-    }
-
-    /**
-     * Log anomaly for analysis
-     */
-    private function log_anomaly($type, $details)
-    {
-        error_log("[Silent Trust] Anomaly: {$type} - {$details}");
     }
     /**
      * Validate fingerprint format

@@ -15,9 +15,6 @@ class CF7_Integration
 
     public function __construct()
     {
-        $this->risk_engine = new Risk_Engine();
-        $this->decision_engine = new Decision_Engine();
-        $this->geoip = new GeoIP();
         $this->db = new Database();
         $this->analytics = new Analytics_Helper();
 
@@ -29,10 +26,6 @@ class CF7_Integration
 
         // Hook to track SMTP failures
         add_action('wpcf7_mail_failed', [$this, 'track_smtp_failure']);
-
-        // Register WP-Cron handlers
-        add_action('silent_trust_delayed_mail_send', [$this, 'send_delayed_mail'], 10, 2);
-        add_action('silent_trust_check_stuck_mail', [$this, 'check_stuck_mail']);
     }
 
     /**
@@ -52,16 +45,17 @@ class CF7_Integration
         if (!$this->validate_honeypot($posted_data)) {
             // Bot detected - block mail immediately
             add_filter('wpcf7_skip_mail', '__return_true', 1);
-            error_log('[Silent Trust] HONEYPOT TRIGGERED - Bot detected');
+            st_log('HONEYPOT TRIGGERED - Bot detected', 'warn');
 
             // Log as blocked submission
             $this->db->log_submission([
                 'form_id' => $contact_form->id(),
+                'fingerprint_hash' => hash('sha256', $this->get_client_ip() . date('Ymd')),
                 'ip_address' => $this->get_client_ip(),
-                'action' => 'DROP',
+                'action' => 'drop',
+                'status' => 'processed',
                 'risk_score' => 100,
-                'reason_code' => 'HONEYPOT_FILLED',
-                'submission_data' => $posted_data
+                'mail_data' => $posted_data
             ]);
 
             return true; // Maintain illusion of success
@@ -72,24 +66,41 @@ class CF7_Integration
 
         if (empty($payload)) {
             // No fingerprint data - let it through but log as suspicious
-            error_log('Silent Trust: No fingerprint data in submission');
+            st_log('No fingerprint data in submission', 'warn');
             return true;
         }
 
-        // Get IP and GeoIP data
-        $ip_address = $this->get_client_ip();
-        $location = $this->geoip->get_location($ip_address);
+        // Block CF7's native synchronous mail sending COMPLETELY
+        add_filter('wpcf7_skip_mail', '__return_true', 1);
+        add_filter('wpcf7_mail_sent', '__return_false', 1);
 
-        // Extract device cookie if present
+        // Get IP and device data
+        $ip_address = $this->get_client_ip();
         $device_cookie = $_COOKIE['st_device_id'] ?? null;
 
-        // Calculate risk score
-        $risk_result = $this->risk_engine->calculate_risk($payload, $ip_address, $device_cookie);
+        // Check Hard Daily Limits & Direct DB Blocks (Instantly)
+        $quick_check = $this->db->check_daily_limit($device_cookie);
+        if ($quick_check['exceeded'] || $this->db->is_penalized($payload['fingerprint_hash'] ?? '', 'fingerprint') || $this->db->is_penalized($ip_address, 'ip')) {
+            st_log("Instant Block (Limit/Penalty) - IP: {$ip_address}", 'warn');
+
+            $this->db->log_submission([
+                'form_id' => $contact_form->id(),
+                'fingerprint_hash' => $payload['fingerprint_hash'] ?? hash('sha256', $ip_address . date('Ymd')),
+                'device_cookie' => $device_cookie,
+                'ip_address' => $ip_address,
+                'action' => 'drop',
+                'status' => 'processed',
+                'risk_score' => 100,
+                'mail_data' => $posted_data // log minimal
+            ]);
+
+            return true;
+        }
 
         // Extract analytics data (URLs, UTM, session, etc.)
         $analytics_data = $this->analytics->extract_analytics($payload, $ip_address);
 
-        // Prepare submission data for decision engine
+        // Prepare submission data for Background Worker (async)
         $submission_data = [
             'form_id' => $contact_form->id(),
             'fingerprint_hash' => $payload['fingerprint_hash'] ?? hash('sha256', json_encode($payload)),
@@ -98,49 +109,31 @@ class CF7_Integration
             'fingerprint_data' => $payload,
             'behavior_data' => $payload,
             'ip_address' => $ip_address,
-            'country_code' => $location['country_code'] ?? null,
-            'city' => $location['city'] ?? null,
-            'asn' => null, // Can add ASN lookup here if needed
+            'risk_score' => 0, // Calculated in background
+            'status' => 'pending',
+            'action' => 'pending', // Default pending
             'mail_data' => $this->extract_mail_data($contact_form, $posted_data)
         ];
 
         // Merge analytics data into submission
         $submission_data = array_merge($submission_data, $analytics_data);
 
-        // Execute decision
-        $decision = $this->decision_engine->execute(
-            $risk_result['score'],
-            $risk_result['breakdown'],
-            $submission_data
-        );
+        // 1. Save submission to DB as "pending"
+        $inserted = $this->db->log_submission($submission_data);
 
-        // Store decision context for later use
-        $this->store_decision_context($decision, $submission_data);
+        if ($inserted) {
+            global $wpdb;
+            $submission_id = $wpdb->insert_id;
 
-        // CRITICAL: Block email BEFORE CF7 processes mail
-        if (!$decision['proceed']) {
-            // Block mail with high priority
-            add_filter('wpcf7_skip_mail', '__return_true', 1);
+            // 2. Enqueue Background Worker Action Scheduler Job
+            as_enqueue_async_action('st_process_submission', ['submission_id' => $submission_id]);
 
-            // Also set a flag for CF7's mail property
-            add_filter('wpcf7_mail_sent', '__return_false', 1);
-
-            // Debug log
-            error_log(sprintf(
-                '[Silent Trust] BLOCKED submission - Risk: %d, Action: %s, Reason: %s',
-                $risk_result['score'],
-                $decision['action'],
-                $decision['reason'] ?? 'high_risk'
-            ));
+            st_log(sprintf('Queued submission ID %d for Background Worker', $submission_id));
         } else {
-            error_log(sprintf(
-                '[Silent Trust] ALLOWED submission - Risk: %d, Action: %s',
-                $risk_result['score'],
-                $decision['action']
-            ));
+            st_log('Failed to log pending submission to DB', 'error');
         }
 
-        // Always return true to maintain illusion of success
+        // Always return true to maintain illusion of success (CF7 returns success to user instantly)
         return true;
     }
 
@@ -156,7 +149,8 @@ class CF7_Integration
             'subject' => $mail['subject'] ?? 'Contact Form Submission',
             'body' => $this->build_mail_body($posted_data),
             'headers' => $mail['additional_headers'] ?? '',
-            'form_id' => $contact_form->id()
+            'form_id' => $contact_form->id(),
+            'raw_data' => $posted_data
         ];
     }
 
@@ -176,72 +170,27 @@ class CF7_Integration
     }
 
     /**
-     * Send delayed mail via WP-Cron
-     */
-    public function send_delayed_mail($mail_data, $submission_data)
-    {
-        // Remove from fallback transient
-        if (isset($mail_data['fallback_id'])) {
-            delete_transient('st_mail_fallback_' . $mail_data['fallback_id']);
-        }
-
-        // Send the email
-        $sent = wp_mail(
-            $mail_data['to'],
-            $mail_data['subject'],
-            $mail_data['body'],
-            $mail_data['headers']
-        );
-
-        // Update log with sent status
-        $this->update_submission_log($submission_data, $sent, 'cron');
-    }
-
-    /**
-     * Check for stuck mail (fallback mechanism)
-     */
-    public function check_stuck_mail()
-    {
-        global $wpdb;
-
-        // Get all st_mail_fallback_* transients
-        $transients = $wpdb->get_results(
-            "SELECT option_name, option_value FROM {$wpdb->options} 
-            WHERE option_name LIKE '_transient_st_mail_fallback_%'"
-        );
-
-        foreach ($transients as $transient) {
-            $value = maybe_unserialize($transient->option_value);
-
-            if (!isset($value['mail_data']) || !isset($value['submission_data'])) {
-                continue;
-            }
-
-            $scheduled_at = $value['mail_data']['scheduled_at'] ?? 0;
-
-            // If older than 10 seconds, send immediately
-            if (time() - $scheduled_at > 10) {
-                $this->send_delayed_mail($value['mail_data'], $value['submission_data']);
-
-                // Log warning about WP-Cron delay
-                error_log('Silent Trust: WP-Cron delayed, sent via fallback');
-            }
-        }
-    }
-
-    /**
      * Track SMTP failures
      */
     public function track_smtp_failure($contact_form)
     {
-        // Get the last submission context
-        $context = get_transient('st_last_decision_context');
+        $submission = \WPCF7_Submission::get_instance();
+        if (!$submission) {
+            return;
+        }
+
+        $posted_data = $submission->get_posted_data();
+        $payload = isset($posted_data['st_payload']) ? json_decode($posted_data['st_payload'], true) : [];
+        $fp_hash = $payload['fingerprint_hash'] ?? '';
+        $ip = $_SERVER['REMOTE_ADDR'] ?? '';
+
+        $key = 'st_decision_' . md5($fp_hash . $ip);
+        $context = get_transient($key);
 
         if ($context && isset($context['submission_data'])) {
             global $wpdb;
             $table = $wpdb->prefix . 'st_submissions';
 
-            // Update the last submission with SMTP error
             $wpdb->update(
                 $table,
                 ['email_failure_reason' => 'SMTP send failed'],
@@ -249,18 +198,9 @@ class CF7_Integration
                 ['%s'],
                 ['%s']
             );
-        }
-    }
 
-    /**
-     * Store decision context temporarily
-     */
-    private function store_decision_context($decision, $submission_data)
-    {
-        set_transient('st_last_decision_context', [
-            'decision' => $decision,
-            'submission_data' => $submission_data
-        ], 60);
+            delete_transient($key);
+        }
     }
 
     /**
@@ -285,21 +225,34 @@ class CF7_Integration
     }
 
     /**
-     * Get client IP
+     * Get client IP (hardened against spoofing)
+     *
+     * Only trusts the admin-configured proxy header.
+     * For X-Forwarded-For, extracts the rightmost (proxy-appended) IP,
+     * not the client-provided leftmost one.
      */
     private function get_client_ip()
     {
-        $ip_keys = [
-            'HTTP_CF_CONNECTING_IP',
-            'HTTP_X_FORWARDED_FOR',
-            'HTTP_X_REAL_IP',
-            'REMOTE_ADDR'
-        ];
+        // Admin can configure which header to trust (default: none / REMOTE_ADDR only)
+        $trusted_header = get_option('st_trusted_proxy_header', '');
 
-        foreach ($ip_keys as $key) {
-            if (isset($_SERVER[$key]) && filter_var($_SERVER[$key], FILTER_VALIDATE_IP)) {
-                return $_SERVER[$key];
+        if (!empty($trusted_header) && isset($_SERVER[$trusted_header])) {
+            $header_value = $_SERVER[$trusted_header];
+
+            // For X-Forwarded-For, take the LAST IP (added by trusted proxy)
+            if ($trusted_header === 'HTTP_X_FORWARDED_FOR' && strpos($header_value, ',') !== false) {
+                $ips = array_map('trim', explode(',', $header_value));
+                $header_value = end($ips);
             }
+
+            if (filter_var($header_value, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                return $header_value;
+            }
+        }
+
+        // Cloudflare header is safe to trust if Cloudflare is in use
+        if (isset($_SERVER['HTTP_CF_CONNECTING_IP']) && filter_var($_SERVER['HTTP_CF_CONNECTING_IP'], FILTER_VALIDATE_IP)) {
+            return $_SERVER['HTTP_CF_CONNECTING_IP'];
         }
 
         return $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
@@ -356,7 +309,7 @@ class CF7_Integration
 
         // If honeypot is filled, it's a bot
         if (isset($posted_data[$field_name]) && !empty($posted_data[$field_name])) {
-            error_log('Silent Trust: Honeypot triggered - Field: ' . $field_name . ' Value: ' . $posted_data[$field_name]);
+            st_log('Honeypot triggered - Field: ' . $field_name . ' Value: ' . $posted_data[$field_name], 'warn');
             return false; // Failed validation (bot detected)
         }
 

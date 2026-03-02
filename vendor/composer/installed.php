@@ -3,11 +3,11 @@
         'name' => 'silent-trust/wordpress-plugin',
         'pretty_version' => 'dev-master',
         'version' => 'dev-master',
-        'reference' => '8007abe12cd46a05a3f1c05a6efc198ad2435020',
+        'reference' => 'f24a3a938edcd5c68c697799ada1c87deebdc62c',
         'type' => 'wordpress-plugin',
         'install_path' => __DIR__ . '/../../',
         'aliases' => array(),
-        'dev' => false,
+        'dev' => true,
     ),
     'versions' => array(
         'composer/ca-bundle' => array(
@@ -49,9 +49,18 @@
         'silent-trust/wordpress-plugin' => array(
             'pretty_version' => 'dev-master',
             'version' => 'dev-master',
-            'reference' => '8007abe12cd46a05a3f1c05a6efc198ad2435020',
+            'reference' => 'f24a3a938edcd5c68c697799ada1c87deebdc62c',
             'type' => 'wordpress-plugin',
             'install_path' => __DIR__ . '/../../',
+            'aliases' => array(),
+            'dev_requirement' => false,
+        ),
+        'woocommerce/action-scheduler' => array(
+            'pretty_version' => '3.9.3',
+            'version' => '3.9.3.0',
+            'reference' => 'c58cdbab17651303d406cd3b22cf9d75c71c986c',
+            'type' => 'wordpress-plugin',
+            'install_path' => __DIR__ . '/../woocommerce/action-scheduler',
             'aliases' => array(),
             'dev_requirement' => false,
         ),

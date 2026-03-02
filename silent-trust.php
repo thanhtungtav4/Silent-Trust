@@ -16,9 +16,35 @@ if (!defined('ABSPATH')) {
 }
 
 // Plugin constants
-define('SILENT_TRUST_VERSION', '1.0.0');
+define('SILENT_TRUST_VERSION', '1.0.1');
 define('SILENT_TRUST_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('SILENT_TRUST_PLUGIN_URL', plugin_dir_url(__FILE__));
+
+/**
+ * Conditional debug logger.
+ * Only writes to error_log when debug mode is enabled in settings.
+ * 
+ * @param string $message  Log message
+ * @param string $level    'info', 'warn', or 'error' (errors always log regardless of debug mode)
+ */
+function st_log($message, $level = 'info')
+{
+    // Errors always log
+    if ($level === 'error') {
+        error_log('[Silent Trust] ' . $message);
+        return;
+    }
+
+    // Info/warn only log when debug mode is ON
+    static $debug_mode = null;
+    if ($debug_mode === null) {
+        $debug_mode = (bool) get_option('st_debug_mode', false);
+    }
+
+    if ($debug_mode) {
+        error_log('[Silent Trust] ' . strtoupper($level) . ': ' . $message);
+    }
+}
 
 // Autoload classes
 spl_autoload_register(function ($class) {
@@ -37,6 +63,9 @@ spl_autoload_register(function ($class) {
         require $file;
     }
 });
+
+// Load Action Scheduler
+require_once SILENT_TRUST_PLUGIN_DIR . 'vendor/woocommerce/action-scheduler/action-scheduler.php';
 
 // Activation hook
 register_activation_hook(__FILE__, function () {
@@ -66,41 +95,26 @@ register_activation_hook(__FILE__, function () {
         wp_schedule_event(strtotime('tomorrow 9:00'), 'daily', 'silent_trust_daily_digest');
     }
 
-    if (!wp_next_scheduled('silent_trust_check_stuck_mail')) {
-        wp_schedule_event(time(), 'st_every_10_seconds', 'silent_trust_check_stuck_mail');
-    }
-
     if (!wp_next_scheduled('silent_trust_weekly_report')) {
         wp_schedule_event(strtotime('next Sunday'), 'weekly', 'silent_trust_weekly_report');
+    }
+
+    if (!wp_next_scheduled('st_cleanup_old_logs')) {
+        wp_schedule_event(time(), 'daily', 'st_cleanup_old_logs');
     }
 });
 
 // Deactivation hook
 register_deactivation_hook(__FILE__, function () {
     wp_clear_scheduled_hook('silent_trust_daily_digest');
-    wp_clear_scheduled_hook('silent_trust_check_stuck_mail');
     wp_clear_scheduled_hook('silent_trust_weekly_report');
+    wp_clear_scheduled_hook('st_cleanup_old_logs');
 });
 
-// Add custom cron schedule
-add_filter('cron_schedules', function ($schedules) {
-    $schedules['st_every_10_seconds'] = [
-        'interval' => 10,
-        'display' => __('Every 10 Seconds', 'silent-trust')
-    ];
-    return $schedules;
-});
-
-// Register async analysis cron action
-add_action('st_process_async_analysis', function ($queue_id) {
-    $async = new \SilentTrust\Async_Processor();
-    $async->process_queued_item($queue_id);
-});
-
-// Register queue cleanup cron action
-add_action('st_cleanup_async_queue', function () {
-    $async = new \SilentTrust\Async_Processor();
-    $async->cleanup_old_queue();
+// Register log cleanup cron action
+add_action('st_cleanup_old_logs', function () {
+    $db = new \SilentTrust\Database();
+    $db->cleanup_old_logs();
 });
 
 // Initialize plugin
@@ -128,12 +142,18 @@ add_action('plugins_loaded', function () {
     require_once SILENT_TRUST_PLUGIN_DIR . 'includes/class-assets.php';
     require_once SILENT_TRUST_PLUGIN_DIR . 'includes/class-alert-system.php';
     require_once SILENT_TRUST_PLUGIN_DIR . 'includes/class-ml-weight-adjuster.php';
-    require_once SILENT_TRUST_PLUGIN_DIR . 'includes/class-admin-ajax.php';
-    require_once SILENT_TRUST_PLUGIN_DIR . 'includes/class-async-processor.php';
+    require_once SILENT_TRUST_PLUGIN_DIR . 'includes/class-background-worker.php';
+    require_once SILENT_TRUST_PLUGIN_DIR . 'includes/class-webhook-sender.php';
 
-    // Initialize components
+    // Initialize lightweight components
     new SilentTrust\Assets();
     new SilentTrust\CF7_Integration();
+    new SilentTrust\Webhook_Sender();
+
+    // Background worker registration
+    new SilentTrust\Background_Worker();
+
+    // Alert system registration (only registers cron hooks, no heavy processing here)
     new SilentTrust\Alert_System();
 
     // Initialize analytics session tracking on frontend (cache-safe)

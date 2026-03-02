@@ -9,11 +9,8 @@ if (!defined('ABSPATH'))
  */
 class Analytics_Helper
 {
-    private $geoip;
-
     public function __construct()
     {
-        $this->geoip = new GeoIP_Bundled();
     }
 
     /**
@@ -26,7 +23,6 @@ class Analytics_Helper
     public function extract_analytics($payload, $ip_address)
     {
         return array_merge(
-            $this->extract_geoip_data($ip_address),
             $this->extract_url_data($payload),
             $this->extract_utm_data($payload),
             $this->extract_session_data($payload),
@@ -35,21 +31,7 @@ class Analytics_Helper
         );
     }
 
-    /**
-     * Extract enhanced GeoIP data
-     */
-    private function extract_geoip_data($ip_address)
-    {
-        $location = $this->geoip->get_location($ip_address);
 
-        return [
-            'ip_country_name' => $location['country_name'] ?? null,
-            'ip_region' => $location['region'] ?? null,
-            'ip_latitude' => $location['latitude'] ?? null,
-            'ip_longitude' => $location['longitude'] ?? null,
-            'ip_timezone' => $location['timezone'] ?? null
-        ];
-    }
 
     /**
      * Extract URL tracking data
@@ -57,14 +39,11 @@ class Analytics_Helper
     private function extract_url_data($payload)
     {
         return [
-            'page_url' => $payload['page_url'] ?? $_SERVER['REQUEST_URI'] ?? null,
-            'landing_url' => $payload['landing_url'] ?? $this->get_landing_url(),
-            'first_url' => $payload['first_url'] ?? null,    // NEW: First URL ever visited
-            // FIX: Use HTTP_REFERER fallback instead of REQUEST_URI for lead_url
-            // REQUEST_URI on CF7 AJAX = /wp-json/contact-form-7/... (wrong!)
-            // HTTP_REFERER = actual page where form exists (correct!)
-            'lead_url' => $payload['lead_url'] ?? $_SERVER['HTTP_REFERER'] ?? null,
-            'referrer_url' => $payload['referrer_url'] ?? $_SERVER['HTTP_REFERER'] ?? null
+            'page_url' => esc_url_raw($payload['page_url'] ?? $_SERVER['REQUEST_URI'] ?? ''),
+            'landing_url' => esc_url_raw($payload['landing_url'] ?? $this->get_landing_url() ?? ''),
+            'first_url' => esc_url_raw($payload['first_url'] ?? ''),
+            'lead_url' => esc_url_raw($payload['lead_url'] ?? $_SERVER['HTTP_REFERER'] ?? ''),
+            'referrer_url' => esc_url_raw($payload['referrer_url'] ?? $_SERVER['HTTP_REFERER'] ?? '')
         ];
     }
 

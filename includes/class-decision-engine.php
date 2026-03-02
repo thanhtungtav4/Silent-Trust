@@ -74,47 +74,53 @@ class Decision_Engine
             $this->db->update_whitelist($submission_data['device_cookie']);
         }
 
-        // CRITICAL: Always log ALL submissions for audit trail and analytics
-        // This includes whitelisted users (risk = 0) for tracking purposes
-        $this->log_submission($submission_data, $risk_score, $risk_breakdown, $log ? 'allow_log' : 'allow', true);
+        $submission_id = $submission_data['id'] ?? null;
+        $action = $log ? 'allow_log' : 'allow';
+
+        if ($submission_id) {
+            $this->update_submission_decision($submission_id, $risk_score, $risk_breakdown, $action);
+
+            // Fire email syncronously here since risk has passed 
+            // Note: This execution itself is already inside the background worker
+            $this->send_direct_email($submission_data, $submission_id);
+
+            // Fire Webhook Event
+            do_action('st_submission_passed', $submission_data);
+        }
 
         return [
             'proceed' => true,
-            'action' => $log ? 'allow_log' : 'allow',
+            'action' => $action,
             'track_smtp' => true
         ];
     }
 
     /**
-     * Handle silent delay via WP-Cron
+     * Handle silent delay via Action Scheduler
      */
     private function handle_delay($submission_data, $risk_score, $risk_breakdown)
     {
-        $mail_data = $submission_data['mail_data'];
-        $delay = rand(2, 5);
-        $fallback_id = uniqid('st_mail_');
+        $delay_seconds = wp_rand(120, 300); // Delay between 2 to 5 minutes
 
-        $mail_data['fallback_id'] = $fallback_id;
-        $mail_data['scheduled_at'] = time();
+        // Ensure submission_id exists (it was passed as id if loaded from DB in worker)
+        $submission_id = $submission_data['id'] ?? null;
 
-        // Schedule send via WP-Cron
-        wp_schedule_single_event(
-            time() + $delay,
-            'silent_trust_delayed_mail_send',
-            ['mail_data' => $mail_data, 'submission_data' => $submission_data]
-        );
+        if ($submission_id) {
+            // Schedule the job via Action Scheduler
+            as_schedule_single_action(
+                time() + $delay_seconds,
+                'st_send_delayed_mail',
+                ['submission_id' => $submission_id]
+            );
 
-        // Store in transient as fallback (expires in 30s)
-        set_transient('st_mail_fallback_' . $fallback_id, [
-            'mail_data' => $mail_data,
-            'submission_data' => $submission_data
-        ], 30);
-
-        // Log the delay action
-        $this->log_submission($submission_data, $risk_score, $risk_breakdown, 'delay', false, 'cron');
+            // Log the action to the DB row
+            $this->update_submission_decision($submission_id, $risk_score, $risk_breakdown, 'delay');
+        } else {
+            st_log('Failed to schedule delayed mail: missing submission ID in worker context.', 'error');
+        }
 
         return [
-            'proceed' => false, // Don't send immediately
+            'proceed' => false,
             'action' => 'delay',
             'silent' => true
         ];
@@ -125,35 +131,28 @@ class Decision_Engine
      */
     private function handle_drop($submission_data, $risk_score, $risk_breakdown, $add_penalty = false, $penalty_type = null)
     {
-        // Log the drop
         $action = $add_penalty ? ($penalty_type === 'soft' ? 'soft_penalty' : 'hard_penalty') : 'drop';
-        $this->log_submission($submission_data, $risk_score, $risk_breakdown, $action, false);
+
+        $submission_id = $submission_data['id'] ?? null;
+
+        if ($submission_id) {
+            $this->update_submission_decision($submission_id, $risk_score, $risk_breakdown, $action);
+        }
 
         // Add penalties if requested
         if ($add_penalty) {
-            $fingerprint_hash = $submission_data['fingerprint_hash'];
-            $ip_address = $submission_data['ip_address'];
+            $fingerprint_hash = $submission_data['fingerprint_hash'] ?? '';
+            $ip_address = $submission_data['ip_address'] ?? '';
 
             // Always add fingerprint penalty
-            $this->db->add_penalty(
-                $penalty_type,
-                'fingerprint',
-                $fingerprint_hash,
-                "Risk score: $risk_score"
-            );
-
-            // Add IP penalty only for hard penalty (>85)
-            if ($penalty_type === 'hard') {
-                $this->db->add_penalty(
-                    'hard',
-                    'ip',
-                    $ip_address,
-                    "Risk score: $risk_score"
-                );
+            if ($fingerprint_hash) {
+                $this->db->add_device_penalty($fingerprint_hash, "Risk score: $risk_score", 30, $penalty_type);
             }
 
-            // Log to anomalies table
-            // Note: need submission_id, will update after log_submission
+            // Add IP penalty only for hard penalty (>85)
+            if ($penalty_type === 'hard' && $ip_address) {
+                $this->db->add_ip_penalty($ip_address, "Risk score: $risk_score", 7, 'hard');
+            }
         }
 
         return [
@@ -164,28 +163,54 @@ class Decision_Engine
     }
 
     /**
-     * Log submission to database
+     * Send email directly
      */
-    private function log_submission($submission_data, $risk_score, $risk_breakdown, $action, $email_sent = false, $sent_via = 'direct')
+    private function send_direct_email($submission_data, $submission_id)
     {
-        // Pass entire submission_data array (already has analytics merged in CF7_Integration)
-        // Just add the fields we determine here
-        $log_data = array_merge($submission_data, [
-            'risk_score' => $risk_score,
-            'risk_breakdown' => $risk_breakdown,
-            'action' => $action,
-            'email_sent' => $email_sent ? 1 : 0,
-            'email_failure_reason' => null, // Will be updated if SMTP fails
-            'sent_via' => $sent_via,
-            // Ensure JSON encoding for object fields
-            'fingerprint_data' => is_string($submission_data['fingerprint_data'] ?? null)
-                ? $submission_data['fingerprint_data']
-                : json_encode($submission_data['fingerprint_data'] ?? []),
-            'behavior_data' => is_string($submission_data['behavior_data'] ?? null)
-                ? $submission_data['behavior_data']
-                : json_encode($submission_data['behavior_data'] ?? [])
-        ]);
+        $mail_data = $submission_data['mail_data'] ?? null;
+        if (!$mail_data || !is_array($mail_data)) {
+            return false;
+        }
 
-        $this->db->log_submission($log_data);
+        $sent = wp_mail(
+            $mail_data['to'],
+            $mail_data['subject'],
+            $mail_data['body'],
+            $mail_data['headers']
+        );
+
+        global $wpdb;
+        $table = $wpdb->prefix . 'st_submissions';
+
+        $wpdb->update(
+            $table,
+            [
+                'email_sent' => $sent ? 1 : 0,
+                'email_failure_reason' => $sent ? null : 'WP_Mail failed during allowable processing',
+                'sent_via' => 'direct'
+            ],
+            ['id' => $submission_id]
+        );
+
+        return $sent;
+    }
+
+    /**
+     * Helper to log decision over an existing DB row natively
+     */
+    private function update_submission_decision($submission_id, $risk_score, $risk_breakdown, $action)
+    {
+        global $wpdb;
+        $table = $wpdb->prefix . 'st_submissions';
+
+        $wpdb->update(
+            $table,
+            [
+                'risk_score' => $risk_score,
+                'risk_breakdown' => wp_json_encode($risk_breakdown),
+                'action' => $action,
+            ],
+            ['id' => $submission_id]
+        );
     }
 }

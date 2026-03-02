@@ -39,9 +39,6 @@ class Assets
             SILENT_TRUST_VERSION,
             true // Load in footer
         );
-
-        // Add defer attribute for non-blocking load
-        add_filter('script_loader_tag', [$this, 'add_defer_attribute'], 10, 2);
     }
 
     /**
@@ -56,22 +53,15 @@ class Assets
     }
 
     /**
-     * Add honeypot and hidden field to CF7 forms
+     * Add hidden payload field to CF7 forms
+     * Note: Honeypot injection is handled by CF7_Integration::inject_honeypot()
      * Called by wpcf7_form_elements filter
      */
     public function add_hidden_field($form_markup)
     {
-        // Add honeypot fields (invisible, bots will fill them)
-        $honeypot = '
-        <div style="position:absolute;left:-9999px;top:-9999px" aria-hidden="true">
-            <input type="text" name="website_url" value="" tabindex="-1" autocomplete="off">
-            <input type="email" name="confirm_email" value="" tabindex="-1" autocomplete="off">
-            <input type="text" name="company_name" value="" tabindex="-1" autocomplete="off">
-        </div>';
-
         // Add st_payload field for fingerprint data
         $hidden_field = '<input type="hidden" name="st_payload" value="" autocomplete="off">';
 
-        return $honeypot . $hidden_field . $form_markup;
+        return $hidden_field . $form_markup;
     }
 }

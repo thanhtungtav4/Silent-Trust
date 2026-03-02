@@ -32,7 +32,7 @@ class GeoIP_Bundled
             require_once SILENT_TRUST_PLUGIN_DIR . 'vendor/autoload.php';
             $this->reader = new \GeoIp2\Database\Reader($this->db_path);
         } catch (\Exception $e) {
-            error_log('[Silent Trust] Failed to load GeoIP database: ' . $e->getMessage());
+            st_log('Failed to load GeoIP database: ' . $e->getMessage(), 'error');
             $this->reader = null;
         }
     }
@@ -55,10 +55,17 @@ class GeoIP_Bundled
      */
     private function get_location_bundled($ip_address)
     {
+        $cache_key = "st_geoip_{$ip_address}";
+        $cached_result = wp_cache_get($cache_key, 'silent_trust');
+
+        if ($cached_result !== false) {
+            return $cached_result;
+        }
+
         try {
             $record = $this->reader->city($ip_address);
 
-            return [
+            $result = [
                 'ip_address' => $ip_address,
                 'city' => $record->city->name ?? '',
                 'region' => $record->mostSpecificSubdivision->name ?? '',
@@ -69,7 +76,14 @@ class GeoIP_Bundled
                 'timezone' => $record->location->timeZone ?? '',
                 'asn' => null // ASN requires separate database
             ];
+
+            // Cache for 24 hours
+            wp_cache_set($cache_key, $result, 'silent_trust', DAY_IN_SECONDS);
+
+            return $result;
         } catch (\Exception $e) {
+            // Cache failures briefly to prevent barrage of disk reads
+            wp_cache_set($cache_key, null, 'silent_trust', HOUR_IN_SECONDS);
             return null;
         }
     }

@@ -47,7 +47,8 @@ class Database
             city VARCHAR(100),
             asn VARCHAR(20),
             risk_score INT DEFAULT 0,
-            action ENUM('allow', 'allow_log', 'delay', 'drop', 'soft_penalty', 'hard_penalty') DEFAULT 'allow',
+            status ENUM('pending', 'processed', 'failed') DEFAULT 'pending',
+            action ENUM('pending', 'allow', 'allow_log', 'delay', 'drop', 'soft_penalty', 'hard_penalty') DEFAULT 'pending',
             email_sent BOOLEAN DEFAULT 0,
             email_failure_reason TEXT COMMENT 'NULL=intentional drop, NOT NULL=SMTP error',
             sent_via ENUM('direct', 'cron', 'fallback') COMMENT 'For delay action',
@@ -105,6 +106,7 @@ class Database
             INDEX idx_time (submitted_at),
             INDEX idx_fp_time (fingerprint_hash, submitted_at),
             INDEX idx_ip_time (ip_address, submitted_at),
+            INDEX idx_action_time (action, submitted_at),
             INDEX idx_country (country_code),
             INDEX idx_city (city),
             INDEX idx_utm_source (utm_source),
@@ -147,26 +149,10 @@ class Database
             INDEX idx_time (detected_at)
         ) $charset_collate;";
 
-        $sql_queue = "CREATE TABLE {$wpdb->prefix}st_analysis_queue (
-            id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-            payload_hash VARCHAR(64) NOT NULL,
-            payload_data LONGTEXT NOT NULL,
-            ip_address VARCHAR(45) NOT NULL,
-            form_id INT NOT NULL,
-            submission_id BIGINT UNSIGNED DEFAULT NULL,
-            created_at DATETIME NOT NULL,
-            processed_at DATETIME DEFAULT NULL,
-            status ENUM('pending','processing','completed','failed') DEFAULT 'pending',
-            error_message TEXT DEFAULT NULL,
-            INDEX idx_status_created (status,created_at),
-            INDEX idx_payload_hash (payload_hash)
-        ) $charset_collate;";
-
         dbDelta($sql_submissions);
         dbDelta($sql_penalties);
         dbDelta($sql_whitelist);
         dbDelta($sql_anomalies);
-        dbDelta($sql_queue);
     }
 
     /**
@@ -240,7 +226,8 @@ class Database
             'city' => $data['city'] ?? null,
             'asn' => $data['asn'] ?? null,
             'risk_score' => $data['risk_score'],
-            'action' => $data['action'],
+            'status' => $data['status'] ?? 'pending',
+            'action' => $data['action'] ?? 'pending',
             'email_sent' => $data['email_sent'] ?? 0,
             'email_failure_reason' => $data['email_failure_reason'] ?? null,
             'sent_via' => $data['sent_via'] ?? 'direct',
@@ -306,7 +293,9 @@ class Database
                 '%s',
                 '%s',
                 '%s',
+                '%s',
                 '%d',
+                '%s',
                 '%s',
                 '%d',
                 '%s',
@@ -625,5 +614,26 @@ class Database
         return $this->wpdb->query(
             "DELETE FROM {$this->penalties_table} WHERE expires_at < NOW()"
         );
+    }
+
+    /**
+     * Cleanup old submissions logs (cron job)
+     * Keeps database from bloating over time
+     */
+    public function cleanup_old_logs()
+    {
+        $retention_days = (int) get_option('st_log_retention_days', 90);
+
+        // Prevent deleting very recent logs accidentally
+        if ($retention_days < 7) {
+            $retention_days = 7;
+        }
+
+        $deleted = $this->wpdb->query($this->wpdb->prepare(
+            "DELETE FROM {$this->submissions_table} WHERE submitted_at < DATE_SUB(NOW(), INTERVAL %d DAY)",
+            $retention_days
+        ));
+
+        return $deleted;
     }
 }
